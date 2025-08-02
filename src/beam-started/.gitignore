@@ -5,3 +5,4 @@ UNKNOWN.egg-info/*
 *.pyc
 some/*
 credentials.json
+kinglear_count.txt*

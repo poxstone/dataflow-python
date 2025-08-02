@@ -1,0 +1,42 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "current_file",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}/src/beam-started"
+        },
+        {
+            "name": "00_basics",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/src/beam-started",
+            "program": "${workspaceFolder}/src/beam-started/00_basics.py",
+        },
+        {
+            "name": "01_read_write_csv",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/src/beam-started",
+            "program": "${workspaceFolder}/src/beam-started/01_read_write_csv.py",
+        },
+        {
+            "name": "02_word_count",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/src/beam-started",
+            "program": "${workspaceFolder}/src/beam-started/02_word_count_template.py",
+            "args": [
+                "--input=./data/kinglear_part_*.txt", "--output=./data_outputs/kinglear_count"
+            ],
+            "env": {
+                "GOOGLES_APPLICATION_CREDENTIALS": "${workspaceFolder}/credentials.json"
+            }
+        }
+    ]
+}
