@@ -1,112 +1,207 @@
 import json
 import argparse
 import logging
-import os
+import datetime # Importar el módulo datetime
 import apache_beam as beam
 from apache_beam.runners.runner import PipelineResult
-from apache_beam.options.pipeline_options import SetupOptions
-from apache_beam.options.pipeline_options import PipelineOptions
-#from google.cloud import firestore
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
+from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
+from apache_beam import pvalue
+from firebase_admin import credentials, firestore, initialize_app
 
-
-output_file = './data_outputs/output.jsonl'
-
-
+# --- Opciones de la Canalización ---
+# No se necesitan cambios aquí, pero se mantiene para la estructura.
 class BqToFsOptions(PipelineOptions):
     @classmethod
     def _add_argparse_args(cls, parser):
         parser.add_argument(
             '--input_bq_table_id',
             dest='input_bq_table_id',
-            default='bluetab-colombia-data-qa.thelook_ecommerce.users',
             required=True,
-            help='Bigquery load io read from table')
-        parser.add_argument(
-            '--output_fs_project_id',
-            dest='output_fs_project_id',
-            default='bluetab-colombia-data-qa',
-            required=True,
-            help='Output Firestore GCP Project ID.')
-        parser.add_argument(
-            '--output_fs_db_id',
-            dest='output_fs_db_id',
-            default='fs-db-uscentral1',
-            required=True,
-            help='Output Firestore Database ID.')
+            help='ID de la tabla de BigQuery para leer, ej: proyecto.dataset.tabla.'
+        )
         parser.add_argument(
             '--output_fs_collection_name',
             dest='output_fs_collection_name',
-            default='users',
             required=True,
-            help='Output Firestore Colletion Name.')
+            help='Nombre de la colección de Firestore de salida.'
+        )
         parser.add_argument(
             '--output_fs_id_field',
             dest='output_fs_id_field',
-            default='id',
-            required=True,
-            help='Output Firestore id document Name.')
+            help='Campo en la fila a usar como ID del documento de Firestore.'
+        )
+        parser.add_argument(
+            '--output_fs_project_id',
+            dest='output_fs_project_id',
+            help='ID del proyecto de GCP para Firestore (opcional, por defecto el del job).'
+        )
+        parser.add_argument(
+            '--output_fs_db_id',
+            dest='output_fs_db_id',
+            default='(default)', # Firestore usa '(default)' como ID de la base de datos por defecto
+            help='ID de la base de datos de Firestore (opcional).'
+        )
 
+# --- Singleton para el Cliente de Firestore ---
+# Se mantiene la lógica del Singleton para una inicialización eficiente.
+class FirestoreClientSingleton:
+    _instance = None
+    _is_initialized = False
 
+    @staticmethod
+    def get_client(project_id=None, database_id=None):
+        # La inicialización de la app de Firebase se maneja una vez por worker.
+        if not FirestoreClientSingleton._is_initialized:
+            try:
+                # Usa credenciales por defecto del entorno de GCP.
+                cred = credentials.ApplicationDefault()
+                initialize_app(cred, {'projectId': project_id})
+                FirestoreClientSingleton._is_initialized = True
+                logging.info("App de Firebase inicializada exitosamente.")
+            except ValueError:
+                # Es normal que la app ya esté inicializada en un worker.
+                logging.info("La app de Firebase ya estaba inicializada.")
+        
+        # Crea el cliente de Firestore si no existe.
+        if FirestoreClientSingleton._instance is None:
+            FirestoreClientSingleton._instance = firestore.client(database_id=database_id)
+            logging.info("Cliente de Firestore inicializado exitosamente.")
+        
+        return FirestoreClientSingleton._instance
+
+# --- DoFn para Escribir en Firestore ---
 class WriteToFirestoreDoFn(beam.DoFn):
-    def __init__(self, project_id, database_id, collection_name, id_field=None):
-        self.project_id = project_id
-        self.database_id = database_id
+    # Límite de escrituras por lote en Firestore.
+    _MAX_BATCH_SIZE = 499 
+    # Constantes para la lógica de reintentos
+    _MAX_RETRIES = 5
+    _INITIAL_BACKOFF_SECONDS = 1
+
+    def __init__(self, collection_name, id_field=None, project_id=None, database_id=None):
         self.collection_name = collection_name
         self.id_field = id_field
+        self.project_id = project_id
+        self.database_id = database_id
+        # Estas variables se inicializarán por worker en start_bundle.
         self.client = None
-        self.cred = None
+        self.batch = None
+        self.batch_size = 0
+    
+    @staticmethod
+    def _json_serializer(obj):
+        """Serializador de JSON para objetos no serializables por defecto, como datetime."""
+        if isinstance(obj, (datetime.datetime, datetime.date)):
+            return obj.isoformat()
+        raise TypeError(f"El tipo {type(obj)} no es serializable en JSON")
 
-    def setup(self):
-        self.cred = credentials.ApplicationDefault()
-        firebase_admin.initialize_app(self.cred, {'projectId': self.project_id})
-        self.client = firestore.client(database_id=self.database_id)
-        print("Cliente de Firestore inicializado.")
+    def start_bundle(self):
+        """Inicializa el cliente y el lote al inicio de cada paquete de trabajo."""
+        self.client = FirestoreClientSingleton.get_client(self.project_id, self.database_id)
+        self.batch = self.client.batch()
+        self.batch_size = 0
 
     def process(self, row):
-        collection_ref = self.client.collection(self.collection_name)
-        # auto create dictionary id if note defined
-        if self.id_field and self.id_field in row:
-            doc_id = str(row[self.id_field])
-            doc_ref = collection_ref.document(doc_id)
-            doc_ref.set(row)
-        else:
-            collection_ref.add(row)
+        """Procesa cada elemento y lo añade al lote de escritura."""
+        try:
+            # Convierte la fila a un diccionario. `dict()` funciona
+            # tanto para objetos beam.Row como para diccionarios ya existentes.
+            row_dict = dict(row)
+            collection_ref = self.client.collection(self.collection_name)
+            
+            # Determina el ID del documento. Si no se especifica, Firestore lo genera.
+            doc_id = str(row_dict.get(self.id_field)) if self.id_field else None
+            
+            if doc_id:
+                doc_ref = collection_ref.document(doc_id)
+            else:
+                doc_ref = collection_ref.document()
 
-def format_to_jsonl(row):
-    return json.dumps(row)
+            # Firestore maneja objetos datetime de Python directamente, no es necesario convertirlos aquí.
+            self.batch.set(doc_ref, row_dict)
+            self.batch_size += 1
+            
+            # Envía el lote cuando alcanza el tamaño máximo.
+            if self.batch_size >= self._MAX_BATCH_SIZE:
+                self._commit_batch()
 
+            # Emite la fila procesada a la salida de éxito para logging.
+            yield pvalue.TaggedOutput('success', json.dumps(row_dict, default=self._json_serializer))
+            
+        except Exception as e:
+            logging.error(f"Error procesando la fila: {row}. Error: {e}")
+            # Emite la fila y el error a la salida de fallo para logging.
+            yield pvalue.TaggedOutput('failed', json.dumps({'row': dict(row), 'error': str(e)}, default=self._json_serializer))
 
-def run(argv=None) -> PipelineResult:
+    def finish_bundle(self):
+        """
+        Asegura que cualquier registro restante en el lote se escriba en Firestore.
+        Este es un paso CRÍTICO para evitar la pérdida de datos.
+        """
+        if self.batch_size > 0:
+            self._commit_batch()
+
+    def _commit_batch(self):
+        """Envía el lote actual con reintentos y backoff exponencial."""
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                self.batch.commit()
+                logging.info(f"Lote de {self.batch_size} documentos enviado exitosamente a Firestore.")
+                break  # Si tiene éxito, sale del bucle de reintentos
+            except Exception as e:
+                logging.warning(f"Intento {attempt + 1} de {self._MAX_RETRIES} falló al enviar el lote: {e}")
+                if attempt + 1 == self._MAX_RETRIES:
+                    logging.error(f"No se pudo enviar el lote después de {self._MAX_RETRIES} intentos. Se descartan {self.batch_size} registros.")
+                    break # Se rinde después del último intento
+
+                # Calcula el tiempo de espera con backoff exponencial y un factor aleatorio (jitter)
+                backoff_time = self._INITIAL_BACKOFF_SECONDS * (2 ** attempt) + random.uniform(0, 1)
+                logging.info(f"Esperando {backoff_time:.2f} segundos antes de reintentar.")
+                time.sleep(backoff_time)
+            finally:
+                # Reinicia el lote para el siguiente conjunto de escrituras, incluso si falló.
+                self.batch = self.client.batch()
+                self.batch_size = 0
+
+# --- Función Principal de la Canalización ---
+def run(argv=None):
     parser = argparse.ArgumentParser()
+    # El parser de argparse no es necesario aquí, Beam lo maneja internamente.
     known_args, pipeline_args = parser.parse_known_args(argv)
-    pipeline_options = PipelineOptions(pipeline_args)
-    known_args = pipeline_options.view_as(BqToFsOptions)
-    pipeline = beam.Pipeline(options=pipeline_options)
 
-    # INIT: Read the text file[pattern] into a PCollection.
-    lines = pipeline | 'Traer datos de Bigquery (SQL)' >> beam.io.ReadFromBigQuery(
-                    query=f"""
-                    SELECT * FROM `{known_args.input_bq_table_id}` LIMIT 10
-                    """, use_standard_sql=True)
-    #lines = lines_s | 'covierte json a string double_quotes' >> beam.Map(json.dumps)  # comillas sencillas a dobles
-    #lines | beam.Map(print)
-    #json_lines = lines | 'ConvertToJSONL' >> beam.Map(format_to_jsonl)
-    #file = json_lines | 'WriteToJSONL' >> beam.io.WriteToText(output_file, file_name_suffix='.jsonl')
-    lines | 'Ecribir en Firestore' >> beam.ParDo(WriteToFirestoreDoFn(
-        project_id=known_args.output_fs_project_id,
-        database_id=known_args.output_fs_db_id,
-        collection_name=known_args.output_fs_collection_name,
-        id_field=known_args.output_fs_id_field
-        ))
+    pipeline_options = PipelineOptions(pipeline_args)
+    bq_fs_options = pipeline_options.view_as(BqToFsOptions)
     
-    # Execute the pipeline and return the result.
-    lines | beam.Map(print)
-    result = pipeline.run()
-    result.wait_until_finish()
-    return result
+    # Guardar la sesión principal es crucial para que los workers tengan el contexto.
+    pipeline_options.view_as(SetupOptions).save_main_session = True
+    
+    with beam.Pipeline(options=pipeline_options) as pipeline:
+        # Lee los datos desde BigQuery.
+        rows_from_bq = pipeline | 'ReadFromBigQuery' >> beam.io.ReadFromBigQuery(
+            #table=bq_fs_options.input_bq_table_id,
+            query=f"SELECT * FROM `{bq_fs_options.input_bq_table_id}` LIMIT 10", # Descomentar para pruebas
+            use_standard_sql=True
+        )
+
+        # Escribe en Firestore usando ParDo y maneja salidas de éxito y fallo.
+        write_results = rows_from_bq | 'WriteToFirestore' >> beam.ParDo(
+            WriteToFirestoreDoFn(
+                collection_name=bq_fs_options.output_fs_collection_name,
+                id_field=bq_fs_options.output_fs_id_field,
+                project_id=bq_fs_options.output_fs_project_id,
+                database_id=bq_fs_options.output_fs_db_id
+            )
+        ).with_outputs('success', 'failed')
+        
+        # --- Logging de Resultados ---
+        # Usa una función lambda para formatear correctamente el mensaje de log.
+        (write_results.success 
+         | 'Log successful writes' >> beam.Map(lambda x: logging.info(f"Escritura exitosa:: {x}")))
+        
+        (write_results.failed 
+         | 'Log failed writes' >> beam.Map(lambda x: logging.error(f"Fallo de escritura:: {x}")))
+    
+    # El pipeline se ejecuta al salir del bloque 'with'. No es necesario pipeline.run().
+    logging.info("El pipeline de Dataflow ha sido construido y se está ejecutando.")
 
 
 if __name__ == '__main__':
