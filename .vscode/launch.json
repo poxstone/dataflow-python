@@ -37,6 +37,19 @@
             "env": {
                 "GOOGLES_APPLICATION_CREDENTIALS": "${workspaceFolder}/credentials.json"
             }
+        },
+        {
+            "name": "bq_fs_main",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/src/dataflow-bq-to-firestore",
+            "program": "${workspaceFolder}/src/dataflow-bq-to-firestore/main.py",
+            "args": [
+                "--input=./data/kinglear_part_*.txt", "--output=./data_outputs/kinglear_count"
+            ],
+            "env": {
+                "GOOGLES_APPLICATION_CREDENTIALS": "${workspaceFolder}/credentials.json"
+            }
         }
     ]
 }

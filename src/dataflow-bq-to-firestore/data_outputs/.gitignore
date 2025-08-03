@@ -1,0 +1,4 @@
+*.txt
+beam-temp*
+file-*
+*.json*
