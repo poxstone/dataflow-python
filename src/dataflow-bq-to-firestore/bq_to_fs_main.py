@@ -3,6 +3,7 @@ import argparse
 import logging
 import random
 import datetime # Importar el módulo datetime
+import time
 import apache_beam as beam
 from apache_beam.runners.runner import PipelineResult
 from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
