@@ -1,6 +1,7 @@
 import json
 import argparse
 import logging
+import random
 import datetime # Importar el módulo datetime
 import apache_beam as beam
 from apache_beam.runners.runner import PipelineResult
