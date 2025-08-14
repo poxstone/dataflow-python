@@ -50,6 +50,17 @@
             "env": {
                 "GOOGLES_APPLICATION_CREDENTIALS": "${workspaceFolder}/credentials.json"
             }
+        },
+        {
+            "name": "test-firestore",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/src/dataflow-bq-to-firestore/",
+            "program": "${workspaceFolder}/src/dataflow-bq-to-firestore/test-firestore.py",
+            "args": [],
+            "env": {
+                "GOOGLES_APPLICATION_CREDENTIALS": "${workspaceFolder}/credentials.json"
+            }
         }
     ]
 }
