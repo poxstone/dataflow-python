@@ -39,13 +39,19 @@
             }
         },
         {
-            "name": "bq_fs_main",
+            "name": "bq_to_fs_main",
             "type": "debugpy",
             "request": "launch",
             "cwd": "${workspaceFolder}/src/dataflow-bq-to-firestore",
-            "program": "${workspaceFolder}/src/dataflow-bq-to-firestore/main.py",
+            "program": "${workspaceFolder}/src/dataflow-bq-to-firestore/bq_to_fs_main.py",
             "args": [
-                "--input=./data/kinglear_part_*.txt", "--output=./data_outputs/kinglear_count"
+                "--project=bluetab-colombia-data-qa",
+                "--temp_location=gs://bluetab-colombia-data-qa_dataflow01/temp/",
+                "--input_bq_table_id=bluetab-colombia-data-qa.thelook_ecommerce.users",
+                "--output_fs_project_id=bluetab-colombia-data-qa",
+                "--output_fs_db_id=fs-db-uscentral1",
+                "--output_fs_collection_name=users",
+                "--output_fs_id_field=id"
             ],
             "env": {
                 "GOOGLES_APPLICATION_CREDENTIALS": "${workspaceFolder}/credentials.json"

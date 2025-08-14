@@ -1,4 +1,4 @@
-venv/*
+foldervenv/*
 .venv/*
 __pycache__/*
 UNKNOWN.egg-info/*

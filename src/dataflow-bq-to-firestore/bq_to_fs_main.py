@@ -100,16 +100,31 @@ class WriteToFirestoreDoFn(beam.DoFn):
         self.batch = self.client.batch()
         self.batch_size = 0
 
+    def _sanitize_row(self, row_dict):
+        for key, value in row_dict.items():
+            # Comprueba si es una instancia de 'date' pero NO de 'datetime'
+            if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+                row_dict[key] = datetime.datetime.combine(value, datetime.time.min)
+            # También maneja listas de diccionarios (campos anidados) recursivamente
+            elif isinstance(value, list):
+                new_list = []
+                for item in value:
+                    if isinstance(item, dict):
+                        new_list.append(self._sanitize_row(item))
+                    else:
+                        new_list.append(item)
+                row_dict[key] = new_list
+        return row_dict
+
     def process(self, row):
         """Procesa cada elemento y lo añade al lote de escritura."""
         try:
             # Convierte la fila a un diccionario. `dict()` funciona
             # tanto para objetos beam.Row como para diccionarios ya existentes.
             row_dict = dict(row)
+            sanitized_row = self._sanitize_row(row_dict)
             collection_ref = self.client.collection(self.collection_name)
-            
-            # Determina el ID del documento. Si no se especifica, Firestore lo genera.
-            doc_id = str(row_dict.get(self.id_field)) if self.id_field else None
+            doc_id = str(sanitized_row.pop(self.id_field)) if self.id_field and self.id_field in sanitized_row else None
             
             if doc_id:
                 doc_ref = collection_ref.document(doc_id)
@@ -117,7 +132,7 @@ class WriteToFirestoreDoFn(beam.DoFn):
                 doc_ref = collection_ref.document()
 
             # Firestore maneja objetos datetime de Python directamente, no es necesario convertirlos aquí.
-            self.batch.set(doc_ref, row_dict)
+            self.batch.set(doc_ref, sanitized_row)
             self.batch_size += 1
             
             # Envía el lote cuando alcanza el tamaño máximo.
@@ -177,8 +192,8 @@ def run(argv=None):
     with beam.Pipeline(options=pipeline_options) as pipeline:
         # Lee los datos desde BigQuery.
         rows_from_bq = pipeline | 'ReadFromBigQuery' >> beam.io.ReadFromBigQuery(
-            #table=bq_fs_options.input_bq_table_id,
-            query=f"SELECT * FROM `{bq_fs_options.input_bq_table_id}` LIMIT 10", # Descomentar para pruebas
+            table=bq_fs_options.input_bq_table_id,
+            #query=f"SELECT * FROM `{bq_fs_options.input_bq_table_id}` LIMIT 10", # Descomentar para pruebas
             use_standard_sql=True
         )
 

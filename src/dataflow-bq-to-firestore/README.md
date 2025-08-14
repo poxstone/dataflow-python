@@ -63,13 +63,13 @@ PROJECT_ID="bluetab-colombia-data-qa";
 SA="sa-dataflow-firestore-test@bluetab-colombia-data-qa.iam.gserviceaccount.com";
 
 # Create template on cloud storage
-python -m "bq_to_fs_main" \
+python "bq_to_fs_main.py" \
     --runner="DataflowRunner" \
     --project="${PROJECT_ID}" \
     --region="${DATAFLOW_REGION}" \
-    --template_location="gs://${STORAGE_BUCKET}/templates/bq_to_fs_main.json" \
-    --staging_location="gs://${STORAGE_BUCKET}/staging" \
-    --temp_location="gs://${STORAGE_BUCKET}/temp" \
+    --template_location="gs://${STORAGE_BUCKET}/templates/bq_to_fs_main2.json" \
+    --staging_location="gs://${STORAGE_BUCKET}_staging/staging" \
+    --temp_location="gs://${STORAGE_BUCKET}_tmp/temp" \
     --requirements_file="requirements.txt" \
     --input_bq_table_id="${PROJECT_ID}.thelook_ecommerce.users" \
     --output_fs_project_id="${PROJECT_ID}" \
@@ -83,7 +83,7 @@ gcloud dataflow jobs run "${JOB_NAME}$(date +%s)" \
     --project="${PROJECT_ID}" \
     --region="${DATAFLOW_REGION}" \
     --service-account-email="${SA}" \
-    --gcs-location="gs://${STORAGE_BUCKET}/templates/bq_to_fs_main.json" \
+    --gcs-location="gs://${STORAGE_BUCKET}/templates/bq_to_fs_main2.json" \
     --network="default" \
     --subnetwork="https://www.googleapis.com/compute/v1/projects/${PROJECT_ID}/regions/${DATAFLOW_REGION}/subnetworks/default" \
     --parameters="input_bq_table_id=${PROJECT_ID}.thelook_ecommerce.users,output_fs_project_id=${PROJECT_ID},output_fs_db_id=fs-db-uscentral1,output_fs_collection_name=users,output_fs_id_field=id";
